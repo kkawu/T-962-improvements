@@ -21,7 +21,7 @@ from time import time
 # settings
 #
 FIELD_NAMES = 'Time,Temp0,Temp1,Temp2,Temp3,Set,Actual,Heat,Fan,ColdJ,Mode'
-TTYs = ('/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyUSB2')
+TTYs = ('/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyUSB2', 'COM12')
 BAUD_RATE = 115200
 
 logdir = 'logs/'
@@ -51,7 +51,7 @@ def logname(filetype, profile):
 def get_tty():
 	for devname in TTYs:
 		try:
-			port = serial.Serial(devname, baudrate=BAUD_RATE)
+			port = serial.Serial(devname, baudrate=BAUD_RATE, timeout=0.1)
 			print 'Using serial port %s' % port.name
 			return port
 
@@ -141,6 +141,9 @@ class Log(object):
 		self.axis_upper = axis_upper
 		self.axis_lower = axis_lower
 
+	def plot_update(self):
+		plt.pause(0.05)  # Note: both draws the new data and runs the GUI's event loop (allowing for mouse interaction).
+
 	def save_logfiles(self):
 		print 'Saved log in %s ' % logname('csv', self.profile)
 		plt.savefig(logname('png', self.profile))
@@ -212,7 +215,7 @@ class Log(object):
 			self.raw_log.append(log)
 
 		# update view
-		plt.draw()
+		self.plot_update()
 
 	def isdone(self):
 		return (
@@ -250,8 +253,14 @@ def logging_only():
 	log = Log()
 
 	with get_tty() as port:
-		while True:
-			log.process_log(port.readline().strip())
+		while True:   # this shall fire new threat
+			logline = port.readline().strip()
+			if logline != '':
+				print logline
+				log.process_log(logline)
+			else:
+				log.plot_update()
+
 
 if __name__ == '__main__':
 	action = sys.argv[1] if len(sys.argv) > 1 else 'log'
