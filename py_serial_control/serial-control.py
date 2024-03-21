@@ -16,13 +16,20 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import serial
 import sys
-from time import time
+import visa
+from thermocouples_reference import thermocouples
+# from time import time
+import threading
+import time
 
 # settings
 #
 FIELD_NAMES = 'Time,Temp0,Temp1,Temp2,Temp3,Set,Actual,Heat,Fan,ColdJ,Mode'
 TTYs = ('/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyUSB2', 'COM12')
 BAUD_RATE = 115200
+
+USE_DM3058 = 1
+COLD_JUNCTION_COMPENSATION = 31.0    # Cold junction temperature
 
 logdir = 'logs/'
 
@@ -85,6 +92,7 @@ class Line(object):
 
 		self.update()
 
+
 class Log(object):
 	profile = ''
 	last_action = None
@@ -92,6 +100,8 @@ class Log(object):
 	def __init__(self):
 		self.init_plot()
 		self.clear_logs()
+		if USE_DM3058:
+			self.rigol_dm3058 = RigolDm3058()
 
 	def clear_logs(self):
 		self.raw_log = []
@@ -122,6 +132,7 @@ class Log(object):
 
 		# select values to be plotted
 		self.lines = [
+			Line(axis_upper, 'DM3058'),
 			Line(axis_upper, 'Actual'),
 			Line(axis_upper, 'Temp0'),
 			Line(axis_upper, 'Temp1'),
@@ -184,6 +195,12 @@ class Log(object):
 
 		try:
 			log = self.parse(logline)
+			# retrieve temperature from Rigol DM3058
+			if USE_DM3058:
+				log['DM3058'] = self.rigol_dm3058.get_temp()
+			else:
+				log['DM3058'] = 0
+			print(log)
 		except ValueError, e:
 			if len(logline) > 0:
 				print '!!', logline
@@ -203,7 +220,7 @@ class Log(object):
 				self.profile = 'bake'
 
 			if log['Mode'] in ('REFLOW', 'BAKE'):
-				self.last_action = time()
+				self.last_action = time.time()
 			self.axis_upper.set_title('Profile: %s Mode: %s ' % (self.profile, self.mode))
 
 		if 'Time' in log and log['Time'] != 0.0:
@@ -255,11 +272,45 @@ def logging_only():
 	with get_tty() as port:
 		while True:   # this shall fire new threat
 			logline = port.readline().strip()
-			if logline != '':
-				print logline
-				log.process_log(logline)
-			else:
-				log.plot_update()
+			log.process_log(logline)
+			# if logline != '':
+			# 	print logline
+			# 	log.process_log(logline)
+			# else:
+			# 	log.plot_update()
+
+class RigolDm3058(object):
+	def __init__(self):
+		# Open port for Rigol
+		self.rm = visa.ResourceManager()
+		print(self.rm.list_resources())
+		self.dmm = self.rm.open_resource('USB0::0x1AB1::0x09C4::DM3R230600365::INSTR')
+		device_descriptor = self.dmm.query('*IDN?')
+		print(device_descriptor)
+		# setup conversion for thermocouple type 'K'
+		self.typeK = thermocouples['K']
+		# create and run separate thread for reading from DM3058
+		self.worker_thread = threading.Thread(target=self.__worker, args=(0.25,))
+		self.worker_thread.start()
+		self.temperature = 0
+
+	def __read_temp_from_dm3058(self):
+		voltage = self.dmm.query(":MEASure:VOLTage:DC?")
+		voltage = float(voltage)
+		voltage_mv = voltage * 1000
+		temperature = self.typeK.inverse_CmV(voltage_mv, Tref=COLD_JUNCTION_COMPENSATION)
+		temperature = round(temperature, 2)
+		# print "DM3058: voltage %fmv, temp: %fC"%(voltage_mv, temperature)
+		return temperature
+
+	def __worker(self, period):
+		print '[RigolDm3058] worker_thread started'
+		while True:
+			self.temperature = self.__read_temp_from_dm3058()
+			time.sleep(period)
+
+	def get_temp(self):
+		return self.temperature
 
 
 if __name__ == '__main__':
